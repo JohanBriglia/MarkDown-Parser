@@ -95,6 +95,7 @@ function refreshOverview(someText, aDiv) {
 class MDParser {
 
     parse(aString) {
+        this.codeParsing = false;
         this.parentNode = new MDNode();
         this.parentNode.level = 0;
         this.rows = aString.split('\n\n');
@@ -104,13 +105,30 @@ class MDParser {
     };
 
     parseRow(aString) {
-        let stringToParse = aString.startsWith("\n") ? aString.slice(1) : aString;
-        switch (stringToParse[0]) {
-            case "#":
-                this.parseTitle(stringToParse);
-                break;
-            default:
-                this.parseParagraph(stringToParse);
+        if (this.codeParsing) {
+            if (aString.startsWith("```") || aString.startsWith("\n```")) {
+                return this.parseCode(aString);
+            };
+            if (aString.endsWith("```") || aString.endsWith("\n```")) {
+                this.currentParentNode.add(new MDText(aString.slice(0, aString.indexOf("```")) + "\n\n"));
+                return this.parseCode("\n```");
+            };
+            this.currentParentNode.add(new MDText(aString + "\n\n"));
+        } else {
+            let stringToParse = aString.startsWith("\n") ? aString.slice(1) : aString;
+            switch (stringToParse[0]) {
+                case "#":
+                    this.parseTitle(stringToParse);
+                    break;
+                case "-":
+                    this.parseList(stringToParse);
+                    break;
+                case "`":
+                    stringToParse.startsWith("```") ? this.parseCode(aString) : this.parseParagraph(stringToParse);
+                    break;
+                default:
+                    this.parseParagraph(stringToParse);
+            };
         };
     };
 
@@ -130,6 +148,31 @@ class MDParser {
         let children = this.parseSentence(aString);
         let aParagraph = new MDParagraph({children: children});
         this.currentParentNode.add(aParagraph);
+    };
+
+    parseList(aString) {
+        let children = this.parseSentence(aString.slice(1));
+        let aListItem = new MDListItem({children: children});
+        if (this.currentParentNode.lastChildren().isList()) {
+            this.currentParentNode.lastChildren().add(aListItem);
+        } else {
+            let newList = new MDUnorderedList({children: [aListItem]});
+            this.currentParentNode.add(newList);
+        };
+    };
+
+    parseCode(aString) {
+        let aRow = aString.startsWith("\n```") ? "\n" + aString.slice(4) : aString.slice(3);
+        if (this.codeParsing) {
+            this.codeParsing = false;
+            this.currentParentNode = this.currentParentNode.parent;
+        } else {
+            this.codeParsing = true;
+            let codeNode = new MDCodeNode();
+            this.currentParentNode.add(codeNode);
+            this.currentParentNode = codeNode;
+        };
+        this.parseRow(aRow)
     };
 
     parseSentence(aString) {
@@ -174,6 +217,8 @@ class MDParser {
         switch (aTypo) {
             case "**":
                 return new MDBold({children: this.parseSentence(aString)});
+            case "`":
+                return new MDCode(aString);
         };
     };
 };
@@ -185,6 +230,16 @@ class MDText {
 
     accept(aVisitor) {
         return aVisitor.visitText(this);
+    };
+
+    setParent(item) {
+        this.parent = item;
+    };
+};
+
+class MDCode extends MDText {
+    accept(aVisitor) {
+        return aVisitor.visitCode(this);
     };
 };
 
@@ -206,6 +261,14 @@ class MDNode {
         return this.children.filter(item => item.isTitle()).length;
     };
 
+    lastChildren() {
+        if (this.children.length == 0) {
+            return this;
+        } else {
+            return this.children[this.children.length - 1];
+        };
+    };
+
     getUpperLevel(anInteger) {
         return this;
     };
@@ -215,6 +278,10 @@ class MDNode {
     };
 
     isTitle() {
+        return false;
+    };
+
+    isList() {
         return false;
     };
 };
@@ -264,9 +331,31 @@ class MDParagraph extends MDNode {
     };
 };
 
+class MDUnorderedList extends MDNode {
+    isList() {
+        return true;
+    };
+
+    accept(aVisitor) {
+        return aVisitor.visitUnorderedList(this);
+    };
+};
+
+class MDListItem extends MDNode {
+    accept(aVisitor) {
+        return aVisitor.visitListItem(this);
+    };
+};
+
 class MDBold extends MDNode {
     accept(aVisitor) {
         return aVisitor.visitBold(this);
+    };
+};
+
+class MDCodeNode extends MDNode {
+    accept(aVisitor) {
+        return aVisitor.visitCodeNode(this);
     };
 };
 
@@ -302,13 +391,36 @@ class MDDom extends MDVisitor {
         this.createNode("p", item);
     };
 
+    visitUnorderedList(item) {
+        this.createNode("ul", item);
+    };
+
+    visitListItem(item) {
+        this.createNode("li", item);
+    };
+
     visitBold(item) {
         this.createNode("b", item);
+    };
+
+    visitCodeNode(item) {
+        let pre = createElement("pre", this.parent);
+        let code = createElement("code", pre, {},
+            {color: "grey"});
+        let underTheDom = new MDDom({parentElement: code});
+        underTheDom.visitAll(item.children);
     };
 
     visitText(item) {
         let text = document.createTextNode(item.text);
         this.parent.appendChild(text);
+    };
+
+    visitCode(item) {
+        let code = createElement("code", this.parent,
+            {innerHTML: item.text},
+            {color: "grey"}
+        );
     };
 
     createNode(type, item) {
@@ -331,12 +443,30 @@ class MDHtml extends MDVisitor {
         return this.setAsHTMLItem(this.visitNode(item), "p") + '\n\n';
     };
 
+    visitUnorderedList(item) {
+        let ul = this.setAsHTMLItem(this.visitNode(item), "ul");
+        return ul.split("><").join(">\n<") + '\n\n';
+    };
+
+    visitListItem(item) {
+        return this.setAsHTMLItem(this.visitNode(item), "li");
+    };
+
     visitBold(item) {
         return this.setAsHTMLItem(this.visitNode(item), "b");
     };
 
     visitText(item) {
         return item.text;
+    };
+
+    visitCode(item) {
+        return `<code color:"grey">${item.text}</code>`;
+    };
+
+    visitCodeNode(item) {
+        let code = this.visitNode(item);
+        return `<pre><code color:"grey">${code}</code></pre>\n\n`;
     };
 
     visitNode(item) {
@@ -374,6 +504,16 @@ class MDMediaWiki extends MDVisitor {
         return `${children}\n\n`;
     };
 
+    visitUnorderedList(item) {
+        let children = this.visitAll(item.children);
+        return `${children}\n`;
+    };
+
+    visitListItem(item) {
+        let children = this.visitAll(item.children);
+        return `*${children}\n`;
+    };
+
     visitBold(item) {
         let children = this.visitAll(item.children);
         return `'''${children}'''`;
@@ -383,13 +523,22 @@ class MDMediaWiki extends MDVisitor {
         return item.text;
     };
 
+    visitCode(item) {
+        return `<nowiki>${item.text}</nowiki>`;
+    };
+
+    visitCodeNode(item) {
+        let children = this.visitAll(item.children);
+        return `<nowiki>${children}</nowiki>`;
+    };
+
     visitAll(aTree) {
         let anArray = aTree.map((item) => this.visit(item));
         return anArray.join("");
     };
 };
 
-let typoTypes = ["**"],
+let typoTypes = ["**", "`"],
     exportTypeList = ["HTML", "MediaWiki"],
     parserLewis = new MDParser(),
     errorCatcher,
