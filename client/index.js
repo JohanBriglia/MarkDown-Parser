@@ -2,6 +2,8 @@ function domConstruction() {
     let globalContainer = createElement("div", document.body, 
         {id:"globalContainer"}
     );
+    createElement("h1", globalContainer,
+        {innerHTML:"MarkDown Parser"});
     let inputContainer = createElement("div", globalContainer, 
         {id:"inputContainer"}, 
         {float:"left", width:"49%"}
@@ -10,18 +12,26 @@ function domConstruction() {
         {id:"inputText", placeholder:"Write a new Markdown here...", autofocus:true, rows:10},
         {width:"99%", height:"400px", padding:"10px"}
     );
-    let exportButton = createElement("button", inputContainer, 
-        {type:"button", innerHTML:"Export"}, 
-        {float:"right"}
+    exportButton = createElement("a", inputContainer
     );
-    let dropdown = createElement("select", inputContainer, {}, 
-        {float:"right"}
+    createElement("button", exportButton, 
+        {type:"button", innerHTML:"Export"}, 
+        {float:"right", padding: "10px"}
+    );
+    dropdown = createElement("select", inputContainer, {}, 
+        {float:"right", padding: "10px"}
     );
     exportTypeList.forEach(function(typeElement) {
         createElement("option", dropdown, 
             {value:typeElement, innerHTML:typeElement}
         );
     });
+    dropdown.addEventListener("change", function() {
+        refreshOverview(inputTextArea.value, overviewContainer);
+    });
+    errorCatcher = createElement("div", inputContainer, {},
+        {float: "right", padding: "10px", color: "#ff0000", style: "bold"}
+    );
     let overviewContainer = createElement("div", globalContainer,
         {id:"overviewContainer"},
         {float:"right", width:"49%",}
@@ -52,14 +62,31 @@ function createElement(type, parent, options, styles) { // options and styles ar
 
 function refreshOverview(someText, aDiv) {
     aDiv.innerHTML = "";
+    errorCatcher.innerHTML = "";
+    window.URL.revokeObjectURL(downloadURL);
+
     let aTree = parserLewis.parse(someText);
-    let aDom = new MDDom({parentElement: aDiv, tree: aTree});
-    aDom.visitAll();
-    let html = new MDHtml({tree: aTree});
-    console.log(html.visitAll());
+    let aDom = new MDDom({parentElement: aDiv});
+    aDom.visitAll(aTree);
+
+    let blob;
+    switch (dropdown.options[dropdown.selectedIndex].text) {
+        case "HTML":
+            let htmlVisitor = new MDHtml();
+            let html = htmlVisitor.setAsHTML(aTree);
+            blob = new Blob([html], {type: 'text/html'});
+            exportButton.download = "MarkDown HTML file.html";
+            break;
+        case "MediaWiki":
+            let wikiVisitor = new MDMediaWiki();
+            let wikiText = wikiVisitor.visitAll(aTree);
+            blob = new Blob([wikiText], {type: 'text/html'});
+            exportButton.download = "MarkDown WikiMedia file.txt";
+            break;
+    };
+    downloadURL = window.URL.createObjectURL(blob);
+    exportButton.href = downloadURL;
 };
-
-
 
 /*
  * Classes
@@ -77,14 +104,13 @@ class MDParser {
     };
 
     parseRow(aString) {
-        if (aString[0] == "#") {
-            let aTitle = this.parseTitle(aString);
-            let aParent = this.currentParentNode.getUpperLevel(aTitle.level - 1);
-            aTitle.setNumber(+aParent.maxTitleChildrenNumber() + 1);
-            aParent.add(aTitle);
-            this.currentParentNode = aTitle;
-        } else {
-            this.currentParentNode.add(this.parseParagraph(aString));
+        let stringToParse = aString.startsWith("\n") ? aString.slice(1) : aString;
+        switch (stringToParse[0]) {
+            case "#":
+                this.parseTitle(stringToParse);
+                break;
+            default:
+                this.parseParagraph(stringToParse);
         };
     };
 
@@ -93,11 +119,17 @@ class MDParser {
         while (aString[i] == "#") {
             i++
         };
-        return new MDTitle({level:i , text:aString.slice(i).trim()});
+        let aTitle = new MDTitle({level:i , text:aString.slice(i).trim()});
+        let aParent = this.currentParentNode.getUpperLevel(aTitle.level - 1);
+        aTitle.setNumber(+aParent.maxTitleChildrenNumber() + 1);
+        aParent.add(aTitle);
+        this.currentParentNode = aTitle;
     };
 
     parseParagraph(aString) {
-        return new MDParagraph({children: this.parseSentence(aString)});
+        let children = this.parseSentence(aString);
+        let aParagraph = new MDParagraph({children: children});
+        this.currentParentNode.add(aParagraph);
     };
 
     parseSentence(aString) {
@@ -115,41 +147,40 @@ class MDParser {
     parseItem(aString, minPosition, aTypo) {
         let sentences = [];
         if (minPosition > 0) {
-            sentences.push(new MDText(aString.slice(0, minPosition)))
-            if (minPosition + aTypo.length == aString.length) { return sentences };
+            let previousSentence = aString.slice(0, minPosition);
+            sentences.push(new MDText(previousSentence));
+            if (minPosition + aTypo.length == aString.length) { 
+                return sentences;
+            };
         };
+
         let maxPosition = aString.slice(minPosition + aTypo.length).indexOf(aTypo);
         if (maxPosition == -1) {
             sentences.push(...this.parseSentence(aString.slice(minPosition + aTypo.length)));
         } else {
-            let typedString = aString.slice(minPosition + aTypo.length, minPosition + maxPosition + aTypo.length);
-            let typoed = this.parseTypo(typedString, aTypo);
-            sentences.push(...typoed);
+            let currentSentence = aString.slice(minPosition + aTypo.length, minPosition + aTypo.length + maxPosition);
+            let parsedTypo = this.parseTypo(currentSentence, aTypo);
+            sentences.push(parsedTypo);
+
             if ((maxPosition + aTypo.length) < (aString.length - aTypo.length - minPosition)) {
-                sentences.push(
-                    ...this.parseSentence(aString.slice(minPosition + maxPosition + aTypo.length)))
+                let nextSentence = aString.slice(minPosition + aTypo.length + maxPosition + aTypo.length);
+                sentences.push(...this.parseSentence(nextSentence));
             };
         };
         return sentences;
     };
 
     parseTypo(aString, aTypo) {
-        return this.parseSentence(aString).map(function(each) {
-            switch (aTypo) {
-                case "**":
-                    return each.setAsBold();
-            };
-        });
+        switch (aTypo) {
+            case "**":
+                return new MDBold({children: this.parseSentence(aString)});
+        };
     };
 };
 
 class MDText {
     constructor(aString) {
         this.text = aString;
-    };
-
-    setAsBold() {
-        return new MDBold({children:[this]});
     };
 
     accept(aVisitor) {
@@ -172,8 +203,7 @@ class MDNode {
     };
 
     maxTitleChildrenNumber() {
-        let titles = this.children.filter(item => item.isTitle());
-        return titles.length == 0 ? 0 : [titles[titles.length - 1].number];
+        return this.children.filter(item => item.isTitle()).length;
     };
 
     getUpperLevel(anInteger) {
@@ -201,12 +231,17 @@ class MDTitle extends MDNode {
     };
 
     getUpperLevel(anInteger) {
-        if (this.level == anInteger) {
-            return this;
-        } else if (this.level > anInteger) {
-            return this.parent.getUpperLevel(anInteger);
-        } else {
-            throw "you can't get lower levels with this function";
+        try {
+            if (this.level == anInteger) {
+                return this;
+            } else if (this.level > anInteger) {
+                return this.parent.getUpperLevel(anInteger);
+            } else {
+                throw `TITLE ERROR : level ${anInteger} parent title needed`;
+            };
+        } catch(e) {
+            let text = document.createTextNode(e);
+            errorCatcher.appendChild(text);
         };
     };
 
@@ -237,16 +272,12 @@ class MDBold extends MDNode {
 
 
 class MDVisitor {
-    constructor ({tree}) {
-        this.tree = tree;
-    }
-
     visit(item) {
         return item.accept(this);
     };
 
-    visitAll() {
-        return this.tree.map((item) => this.visit(item));
+    visitAll(aTree) {
+        return aTree.map((item) => this.visit(item));
     };
         
 };
@@ -261,17 +292,18 @@ class MDDom extends MDVisitor {
         let hLevel = Math.min(item.level, 6);
         let levelsTree = item.getUpperNumbers().join('.');
         createElement(`h${hLevel}`, this.parent,
-            {innerText: `${levelsTree}. ${item.text}`});
-        let underTheDom = new MDDom({parentElement: this.parent, tree: item.children});
-        underTheDom.visitAll();  
+            {innerText: `${levelsTree}. ${item.text}`}
+        );
+        let underTheDom = new MDDom({parentElement: this.parent});
+        underTheDom.visitAll(item.children);
     };
 
     visitParagraph(item) {
-        this.visitNode("p", item);
+        this.createNode("p", item);
     };
 
     visitBold(item) {
-        this.visitNode("b", item);
+        this.createNode("b", item);
     };
 
     visitText(item) {
@@ -279,10 +311,11 @@ class MDDom extends MDVisitor {
         this.parent.appendChild(text);
     };
 
-    visitNode(type, item) {
+    createNode(type, item) {
         let node = createElement(type, this.parent);
-        let underTheDom = new MDDom({parentElement: node, tree: item.children});
-        underTheDom.visitAll();
+        let underTheDom = new MDDom({parentElement: node});
+        underTheDom.visitAll(item.children);
+        return node;
     };
 };
 
@@ -290,40 +323,78 @@ class MDHtml extends MDVisitor {
     visitTitle(item) {
         let hLevel = Math.min(item.level, 6);
         let levelsTree = item.getUpperNumbers().join('.');
-        let html = this.setAsHTML(`${levelsTree}. ${item.text}`, `h${hLevel}`);
-        let visitor = new MDHtml({tree:item.children});
-        return html + visitor.visitAll();
+        let html = this.setAsHTMLItem(`${levelsTree}. ${item.text}`, `h${hLevel}`);
+        return html + '\n\n' + this.visitNode(item);
     };
 
     visitParagraph(item) {
-        let visitor = new MDHtml({tree:item.children});
-        let html = visitor.visitAll();
-        return this.setAsHTML(html, "p");
+        return this.setAsHTMLItem(this.visitNode(item), "p") + '\n\n';
     };
 
     visitBold(item) {
-        let visitor = new MDHtml({tree:item.children});
-        let html = visitor.visitAll();
-        return this.setAsHTML(html, "b");
+        return this.setAsHTMLItem(this.visitNode(item), "b");
     };
 
     visitText(item) {
         return item.text;
     };
 
-    setAsHTML(text, type) {
+    visitNode(item) {
+        let visitor = new MDHtml();
+        return visitor.visitAll(item.children);
+    };
+
+    setAsHTMLItem(text, type) {
         return `<${type}>${text}</${type}>`
     };
 
-    visitAll() {
-        let anArray = this.tree.map((item) => this.visit(item));
-        let body = anArray.join("");
-        return `<!DOCTYPE html><html><head><title>MarkDown</title></head><body>${body}</body></html>`;
+    setAsHTML(aTree) {
+        let body = this.visitAll(aTree);
+        return `<!DOCTYPE html>\n<html>\n<head>\n<title>MarkDown</title>\n</head>\n<body>\n\n${body}</body>\n</html>`;
+    };        
+
+    visitAll(aTree) {
+        let anArray = aTree.map((item) => this.visit(item));
+        return anArray.join("");
+    };
+};
+
+class MDMediaWiki extends MDVisitor {
+    visitTitle(item) {
+        let level = "=";
+        for (let i = 0 ; i < item.level ; i++) {
+            level += "=";
+        };
+        let children = this.visitAll(item.children);
+        return `${level} ${item.text} ${level}\n\n${children}`
+    };
+
+    visitParagraph(item) {
+        let children = this.visitAll(item.children);
+        return `${children}\n\n`;
+    };
+
+    visitBold(item) {
+        let children = this.visitAll(item.children);
+        return `'''${children}'''`;
+    };
+
+    visitText(item) {
+        return item.text;
+    };
+
+    visitAll(aTree) {
+        let anArray = aTree.map((item) => this.visit(item));
+        return anArray.join("");
     };
 };
 
 let typoTypes = ["**"],
     exportTypeList = ["HTML", "MediaWiki"],
-    parserLewis = new MDParser();
+    parserLewis = new MDParser(),
+    errorCatcher,
+    exportButton,
+    dropdown,
+    downloadURL;
 
 domConstruction();
