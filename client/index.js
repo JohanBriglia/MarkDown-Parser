@@ -219,6 +219,8 @@ class MDParser {
                 return new MDBold({children: this.parseSentence(aString)});
             case "`":
                 return new MDCode(aString);
+            case "_":
+                return new MDItalic({children: this.parseSentence(aString)});
         };
     };
 };
@@ -353,6 +355,12 @@ class MDBold extends MDNode {
     };
 };
 
+class MDItalic extends MDNode {
+    accept(aVisitor) {
+        return aVisitor.visitItalic(this);
+    };
+};
+
 class MDCodeNode extends MDNode {
     accept(aVisitor) {
         return aVisitor.visitCodeNode(this);
@@ -368,7 +376,16 @@ class MDVisitor {
     visitAll(aTree) {
         return aTree.map((item) => this.visit(item));
     };
-        
+
+    setToHTMLCode(aString) {
+        let htmlCode = {"&":"&amp;", "<":"&lsaquo;", ">":"&rsaquo;"};
+        let codeString = aString;
+        for (var key in htmlCode) {
+            let reg = new RegExp(key, "g");
+            codeString = codeString.replace(reg, htmlCode[key]);
+        };
+        return codeString;
+    };
 };
 
 class MDDom extends MDVisitor {
@@ -400,13 +417,18 @@ class MDDom extends MDVisitor {
     };
 
     visitBold(item) {
-        this.createNode("b", item);
+        this.createNode("strong", item);
+    };
+
+    visitItalic(item) {
+        this.createNode("i", item);
     };
 
     visitCodeNode(item) {
-        let pre = createElement("pre", this.parent);
-        let code = createElement("code", pre, {},
-            {color: "grey"});
+        let pre = createElement("pre", this.parent, {},
+            {backgroundColor: "silver"}
+        );
+        let code = createElement("code", pre);
         let underTheDom = new MDDom({parentElement: code});
         underTheDom.visitAll(item.children);
     };
@@ -417,9 +439,10 @@ class MDDom extends MDVisitor {
     };
 
     visitCode(item) {
-        let code = createElement("code", this.parent,
-            {innerHTML: item.text},
-            {color: "grey"}
+        let codeText = this.setToHTMLCode(item.text);
+        createElement("code", this.parent,
+            {innerHTML: codeText},
+            {backgroundColor: "silver"}
         );
     };
 
@@ -453,7 +476,11 @@ class MDHtml extends MDVisitor {
     };
 
     visitBold(item) {
-        return this.setAsHTMLItem(this.visitNode(item), "b");
+        return this.setAsHTMLItem(this.visitNode(item), "strong");
+    };
+
+    visitItalic(item) {
+        return this.setAsHTMLItem(this.visitNode(item), "i");
     };
 
     visitText(item) {
@@ -461,12 +488,13 @@ class MDHtml extends MDVisitor {
     };
 
     visitCode(item) {
-        return `<code color:"grey">${item.text}</code>`;
+        let code = this.setToHTMLCode(item.text);
+        return `<code style="background-color:silver;">${code}</code>`;
     };
 
     visitCodeNode(item) {
         let code = this.visitNode(item);
-        return `<pre><code color:"grey">${code}</code></pre>\n\n`;
+        return `<pre style="background-color:silver;"><code>${code}</code></pre>\n\n`;
     };
 
     visitNode(item) {
@@ -519,6 +547,11 @@ class MDMediaWiki extends MDVisitor {
         return `'''${children}'''`;
     };
 
+    visitItalic(item) {
+        let children = this.visitAll(item.children);
+        return `''${children}''`;
+    };
+
     visitText(item) {
         return item.text;
     };
@@ -538,7 +571,7 @@ class MDMediaWiki extends MDVisitor {
     };
 };
 
-let typoTypes = ["**", "`"],
+let typoTypes = ["**", "`", "_",],
     exportTypeList = ["HTML", "MediaWiki"],
     parserLewis = new MDParser(),
     errorCatcher,
